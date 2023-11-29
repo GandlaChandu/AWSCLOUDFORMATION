@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Create an EC2 instance for Active Directory
+ 
+Parameters:
+  VpcCIDR:
+    Description: The IP address range for the VPC
+    Type: String
+    Default: 10.0.0.0/16
+ 
+  VpcName:
+    Description: Name for the VPC
+    Type: String
+    Default: VPC_AD11
+ 
+  InstanceTypeParameter:
+    Description: Instance type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - m1.small
+      - t3.xlarge
+ 
+  HostServerInstanceName:
+    Description: Name of the host server EC2 instance
+    Type: String
+    Default: ActiveDirectoryHostServer11
+  MemberServerInstanceName:
+    Description: Name of the member server EC2 instance
+    Type: String
+    Default: ActiveDirectoryMemberServer11
+ 
+  # DhcpName:
+  #   Description: Name for the DHCP Options Set
+  #   Type: String
+  #   Default: MyDhcpOptions11
+ 
+  ImageId:
+    Description: Enter the image ID for the EC2 instance.
+    Type: AWS::EC2::Image::Id
+    Default: ami-009b52c0f357dd769
+ 
+  KeyPairName:
+    Description: Name of the EC2 Key Pair
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: keypair1
+ 
+  SubnetCIDR:
+    Description: The IP address range (CIDR notation) for the subnets
+    Type: String
+    Default: 10.0.0.0/24
+ 
+  SubnetName:
+    Description: Name for the Subnet
+    Type: String
+    Default: Subnet_AD11
+ 
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Windows Administrator Password
+    MinLength: 8
+ 
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+ 
+  ActiveDirectorySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: AD server Security Group11
+      GroupDescription: Enable AD Server traffic
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0 # Allow RDP access from anywhere
+        - IpProtocol: tcp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+ 
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref SubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Ref SubnetName
+ 
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+ 
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+ 
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+ 
+  SubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+ 
+  InternetGatewayRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+ 
+  ActiveDirectoryHostServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceTypeParameter
+      SecurityGroupIds:
+        - !GetAtt ActiveDirectorySecurityGroup.GroupId
+      KeyName: !Ref KeyPairName
+      ImageId: ami-009b52c0f357dd769
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.0.18
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+         
+          $AdminPassword = "${AdminPassword}"
+          net user Administrator "${AdminPassword}"
+ 
+          # Install AD DS
+          Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+ 
+          Install-ADDSDomainController -DomainName "awsdevops.com" -SafeModeAdministratorPassword (ConvertTo-SecureString -AsPlainText "Welcome@123" -Force) -Force -NoReboot
+          # Configure AD DS
+ 
+          Install-ADDSForest -DomainName "awsdevops.com" -SafeModeAdministratorPassword (ConvertTo-SecureString -AsPlainText "Welcome@123" -Force) -Force -NoReboot
+          # Allow RDP and DNS inbound traffic
+     
+          New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow
+     
+          New-NetFirewallRule -DisplayName "Allow DNS" -Direction Inbound -Protocol UDP -LocalPort 53 -Action Allow
+          # Reboot to complete the AD DS setup
+     
+          Restart-Computer -Force
+       
+          </powershell>
+ 
+      Tags:
+        - Key: Name
+          Value: !Ref HostServerInstanceName
+ 
+  # DhcpOptionsSet:
+  #   Type: AWS::EC2::DHCPOptions
+  #   Properties:
+  #     DomainName: !Ref DhcpName
+  #     DomainNameServers:
+  #       - 10.0.0.18
+  #     # NtpServers:
+  #     #   - 0.amazon.pool.ntp.org
+  #     #   - 1.amazon.pool.ntp.org
+  #     # NetBiosNameServers:
+  #     #   - 10.0.0.16
+  #     # NetBiosNodeType: 2
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Ref DhcpName
+ 
+  # VPCDhcpOptionsAssociation:
+  #     Type: AWS::EC2::VPCDHCPOptionsAssociation
+  #     Properties:
+  #       DhcpOptionsId: !Ref DhcpOptionsSet
+  #       VpcId: !Ref VPC
+ 
+  ActiveDirectoryMemberServer:
+    Type: AWS::EC2::Instance
+    DependsOn: ActiveDirectoryHostServer
+    Properties:
+      InstanceType: !Ref InstanceTypeParameter
+      SecurityGroupIds:
+        - !GetAtt ActiveDirectorySecurityGroup.GroupId
+      KeyName: !Ref KeyPairName
+      ImageId: ami-009b52c0f357dd769
+      SubnetId: !Ref Subnet
+     
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+          # Parameters
+          $DomainName = "awsdevops.com"  # Your AD Domain Name
+          $DomainAdminUser = "AWSDEVOPS\Administrator"  # The AD Admin User
+          $AdminPassword = "NewPassword@1234"  # The AD Admin User Password
+ 
+          # Fetch the interface index
+          $InterfaceIndex = (Get-NetAdapter | Where-Object { $_.Name -eq "Ethernet 3" }).InterfaceIndex
+ 
+          # Set DNS to point to the AD Server (replace with the actual IP of your AD Server)
+          $DnsIpAddress = "10.0.0.18"
+          Set-DnsClientServerAddress -InterfaceIndex $InterfaceIndex -ServerAddresses $DnsIpAddress
+          New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow
+ 
+          New-NetFirewallRule -DisplayName "Allow DNS" -Direction Inbound -Protocol UDP -LocalPort 53 -Action Allow
+           Start-Sleep -Seconds 900
+ 
+          # Join the domain
+          Add-Computer -DomainName $DomainName -Credential (New-Object PSCredential "$DomainAdminUser", (ConvertTo-SecureString $AdminPassword -AsPlainText -Force)) -Restart
+ 
+          </powershell>
+      Tags:
+        - Key: Name
+          Value: !Ref MemberServerInstanceName
